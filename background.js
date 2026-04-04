@@ -2,7 +2,19 @@ const DEFAULT_MAP = {
   playPause: { type: "note", channel: 0, note: 11 },
   cue: { type: "note", channel: 0, note: 12 },
   tempo: { type: "cc14", channel: 0, cc: 0, minValue: 0, maxValue: 16383, minRate: 0.5, maxRate: 2.0 },
-  jog: { type: "cc", channel: 0, cc: 34, mode: "relative", sensitivity: 0.0333 },
+  jog: {
+    type: "cc",
+    channel: 0,
+    ccs: [33, 35],
+    scratchCcs: [34],
+    mode: "relative",
+    relativeFormat: "binaryOffset",
+    invert: false,
+    sensitivity: 0.08,
+    negativeSensitivityMultiplier: 1.0,
+    maxOffset: 1.5,
+    resetDelayMs: 160
+  },
   hotcue: [
     { type: "note", channel: 7, note: 0 },
     { type: "note", channel: 7, note: 1 },
@@ -23,7 +35,35 @@ const STATE = {
 
 function normalizeMapping(raw) {
   if (!raw || typeof raw !== "object") return DEFAULT_MAP;
-  const out = { ...DEFAULT_MAP, ...raw };
+
+  const mergedJog = {
+    ...DEFAULT_MAP.jog,
+    ...(raw.jog || {})
+  };
+
+  if (
+    mergedJog.relativeFormat === "signedBit" &&
+    (mergedJog.cc === 34 || mergedJog.ccs?.includes(33) || mergedJog.ccs?.includes(35))
+  ) {
+    mergedJog.relativeFormat = DEFAULT_MAP.jog.relativeFormat;
+    mergedJog.invert = DEFAULT_MAP.jog.invert;
+    mergedJog.sensitivity = DEFAULT_MAP.jog.sensitivity;
+    mergedJog.negativeSensitivityMultiplier = DEFAULT_MAP.jog.negativeSensitivityMultiplier;
+    mergedJog.ccs = DEFAULT_MAP.jog.ccs;
+    mergedJog.scratchCcs = DEFAULT_MAP.jog.scratchCcs;
+  }
+
+  const out = {
+    ...DEFAULT_MAP,
+    ...raw,
+    tempo: {
+      ...DEFAULT_MAP.tempo,
+      ...(raw.tempo || {})
+    },
+    jog: {
+      ...mergedJog
+    }
+  };
   if (!Array.isArray(out.hotcue)) out.hotcue = DEFAULT_MAP.hotcue;
   return out;
 }

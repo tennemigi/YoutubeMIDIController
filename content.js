@@ -2,7 +2,19 @@ const DEFAULT_MAP = {
   playPause: { type: "note", channel: 0, note: 11 },
   cue: { type: "note", channel: 0, note: 12 },
   tempo: { type: "cc14", channel: 0, cc: 0, minValue: 0, maxValue: 16383, minRate: 0.5, maxRate: 2.0 },
-  jog: { type: "cc", channel: 0, cc: 34, mode: "relative", sensitivity: 0.5 },
+  jog: {
+    type: "cc",
+    channel: 0,
+    ccs: [33, 35],
+    scratchCcs: [34],
+    mode: "relative",
+    relativeFormat: "binaryOffset",
+    invert: false,
+    sensitivity: 0.10,
+    negativeSensitivityMultiplier: 1.0,
+    maxOffset: 1.5,
+    resetDelayMs: 160
+  },
   hotcue: [
     { type: "note", channel: 7, note: 0 },
     { type: "note", channel: 7, note: 1 },
@@ -30,14 +42,50 @@ const STATE = {
 let mapping = DEFAULT_MAP;
 let midiOut = null;
 
+function normalizeMapping(raw) {
+  if (!raw || typeof raw !== "object") return DEFAULT_MAP;
+
+  const mergedJog = {
+    ...DEFAULT_MAP.jog,
+    ...(raw.jog || {})
+  };
+
+  if (
+    mergedJog.relativeFormat === "signedBit" &&
+    (mergedJog.cc === 34 || mergedJog.ccs?.includes(33) || mergedJog.ccs?.includes(35))
+  ) {
+    mergedJog.relativeFormat = DEFAULT_MAP.jog.relativeFormat;
+    mergedJog.invert = DEFAULT_MAP.jog.invert;
+    mergedJog.sensitivity = DEFAULT_MAP.jog.sensitivity;
+    mergedJog.negativeSensitivityMultiplier = DEFAULT_MAP.jog.negativeSensitivityMultiplier;
+    mergedJog.ccs = DEFAULT_MAP.jog.ccs;
+    mergedJog.scratchCcs = DEFAULT_MAP.jog.scratchCcs;
+  }
+
+  return {
+    ...DEFAULT_MAP,
+    ...raw,
+    tempo: {
+      ...DEFAULT_MAP.tempo,
+      ...(raw.tempo || {})
+    },
+    jog: {
+      ...mergedJog
+    },
+    hotcue: Array.isArray(raw.hotcue) ? raw.hotcue : DEFAULT_MAP.hotcue
+  };
+}
+
 // 速度適用
 function applyPlaybackRate() {
   const video = getVideo();
   if (!video) return;
+  const minPlaybackRate = mapping.tempo?.minPlaybackRate ?? 0.25;
+  const maxPlaybackRate = mapping.tempo?.maxPlaybackRate ?? 4.0;
 
   let rate = STATE.tempoRate + STATE.jogOffset;
 
-  rate = Math.max(0.1, Math.min(4.0, rate));
+  rate = Math.max(minPlaybackRate, Math.min(maxPlaybackRate, rate));
   video.playbackRate = rate;
 
   console.log("Final Rate:", rate);
@@ -137,6 +185,51 @@ function jog(offset) {
   }, 80);
 }
 
+function decodeRelativeValue(raw, format = "signedBit") {
+  if (raw == null) return 0;
+  if (raw === 0 || raw === 64) return 0;
+
+  switch (format) {
+    case "binaryOffset":
+      return raw - 64;
+    case "twosComplement":
+      return raw < 64 ? raw : raw - 128;
+    case "auto": {
+      const signedBit = raw < 64 ? raw : -(raw - 64);
+      const twosComplement = raw < 64 ? raw : raw - 128;
+      const binaryOffset = raw - 64;
+      const candidates = [signedBit, twosComplement, binaryOffset].filter((value) => value !== 0);
+      return candidates.reduce((best, value) => (
+        Math.abs(value) < Math.abs(best) ? value : best
+      ));
+    }
+    case "signedBit":
+    default:
+      return raw < 64 ? raw : -(raw - 64);
+  }
+}
+
+function jog(delta) {
+  const sensitivity = mapping.jog.sensitivity ?? 0.03;
+  const negativeSensitivityMultiplier = mapping.jog.negativeSensitivityMultiplier ?? 1.0;
+  const maxOffset = mapping.jog.maxOffset ?? 1.5;
+  const resetDelayMs = mapping.jog.resetDelayMs ?? 160;
+  const scaledDelta = delta < 0 ? delta * negativeSensitivityMultiplier : delta;
+
+  STATE.jogOffset = Math.max(-maxOffset, Math.min(maxOffset, scaledDelta * sensitivity));
+
+  applyPlaybackRate();
+
+  if (STATE.jogResetTimer) {
+    clearTimeout(STATE.jogResetTimer);
+  }
+
+  STATE.jogResetTimer = setTimeout(() => {
+    STATE.jogOffset = 0;
+    applyPlaybackRate();
+  }, resetDelayMs);
+}
+
 function midiMatch(event, target) {
   if (!target || !event) return false;
   const status = event.data[0];
@@ -211,20 +304,25 @@ function handleMidiEvent(event) {
     return;
   }
 
-  if (mapping.jog && type === 0xb0 && channel === mapping.jog.channel && event.data[1] === mapping.jog.cc) {
+  const jogCcs = Array.isArray(mapping.jog?.ccs)
+    ? mapping.jog.ccs
+    : (mapping.jog?.cc != null ? [mapping.jog.cc] : []);
+  const scratchCcs = Array.isArray(mapping.jog?.scratchCcs) ? mapping.jog.scratchCcs : [];
+  const allJogCcs = new Set([...jogCcs, ...scratchCcs]);
+
+  if (mapping.jog && type === 0xb0 && channel === mapping.jog.channel && allJogCcs.has(event.data[1])) {
+    const cc = event.data[1];
     const raw = event.data[2];
-    let delta = 0;
-    if (mapping.jog.mode === "relative") {
-      if (raw === 0) delta = 0;
-      else if (raw < 65) delta = raw - 64;
-      else delta = raw - 64;
-    } else {
-      delta = (raw - 64) / 64;
-    }
-    const sensitivity = mapping.jog.sensitivity ?? 0.5;
-    const offset = delta * sensitivity;
-    console.log("Jog detected", raw, delta, offset);
-    if (offset !== 0) jog(offset);
+    const relativeFormat = mapping.jog.relativeFormat ?? "signedBit";
+    const delta = mapping.jog.mode === "relative"
+      ? decodeRelativeValue(raw, relativeFormat)
+      : (raw - 64) / 64;
+    const direction = mapping.jog.invert ? -1 : 1;
+    const effectiveDelta = (scratchCcs.includes(cc) ? delta * 0.5 : delta) * direction;
+
+    console.log("Jog detected", { cc, raw, delta, effectiveDelta, relativeFormat });
+
+    if (effectiveDelta !== 0) jog(effectiveDelta);
     return;
   }
 }
@@ -265,7 +363,7 @@ async function setupMidi() {
 
 function loadMapping() {
   chrome.storage.sync.get(["midiMapping"], (data) => {
-    mapping = data.midiMapping ? { ...DEFAULT_MAP, ...data.midiMapping } : DEFAULT_MAP;
+    mapping = normalizeMapping(data.midiMapping);
     // 既存HOTCUEのライトオン
     if (midiOut) {
       STATE.hotcues.forEach((time, idx) => {
@@ -293,7 +391,7 @@ document.addEventListener("visibilitychange", () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.midiMapping) {
-    mapping = changes.midiMapping.newValue ? { ...DEFAULT_MAP, ...changes.midiMapping.newValue } : DEFAULT_MAP;
+    mapping = normalizeMapping(changes.midiMapping.newValue);
   }
 });
 
