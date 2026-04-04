@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube MIDI Controller",
+  "short_name": "YT MIDI",
+  "description": "DDJ-FLX4向けのYouTube再生操作をMIDIで制御します。コンフィグでキーマップ変更可能。",
+  "version": "1.0.0",
+  "permissions": ["storage", "activeTab", "scripting", "midi"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "options_page": "options.html"
+}
