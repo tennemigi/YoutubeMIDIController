@@ -30,17 +30,17 @@ const DEFAULT_MAP = {
 const STATE = {
   cueTime: null,
   hotcues: Array(8).fill(null),
-  jogAccumulator: 0,
-  jogLastTime: null,
-  tempoValue: 8192,  // 14-bit center
-
-  tempoRate: 1.0,     // フェーダー基準
-  jogOffset: 0,       // ピッチベンド
-  jogResetTimer: null // ジョグオフセットリセット用タイマー
+  tempoValue: 8192,
+  tempoRate: 1.0,
+  jogOffset: 0,
+  jogResetTimer: null
 };
 
 let mapping = DEFAULT_MAP;
+let assignedDeck = null;
+let midiAccess = null;
 let midiOut = null;
+let midiInitialized = false;
 
 function normalizeMapping(raw) {
   if (!raw || typeof raw !== "object") return DEFAULT_MAP;
@@ -69,14 +69,34 @@ function normalizeMapping(raw) {
       ...DEFAULT_MAP.tempo,
       ...(raw.tempo || {})
     },
-    jog: {
-      ...mergedJog
-    },
+    jog: mergedJog,
     hotcue: Array.isArray(raw.hotcue) ? raw.hotcue : DEFAULT_MAP.hotcue
   };
 }
 
-// 速度適用
+function getVideo() {
+  return document.querySelector("video");
+}
+
+function getDeckChannel(baseChannel, targetKind = "main") {
+  if (baseChannel == null || assignedDeck == null) return baseChannel;
+  if (assignedDeck === 1) return baseChannel;
+  return baseChannel + (targetKind === "hotcue" ? 2 : 1);
+}
+
+function resolveDeckTarget(target, targetKind = "main") {
+  if (!target) return null;
+  return {
+    ...target,
+    channel: getDeckChannel(target.channel, targetKind)
+  };
+}
+
+function getResolvedHotcue(index) {
+  if (!Array.isArray(mapping.hotcue) || !mapping.hotcue[index]) return null;
+  return resolveDeckTarget(mapping.hotcue[index], "hotcue");
+}
+
 function applyPlaybackRate() {
   const video = getVideo();
   if (!video) return;
@@ -84,22 +104,17 @@ function applyPlaybackRate() {
   const maxPlaybackRate = mapping.tempo?.maxPlaybackRate ?? 4.0;
 
   let rate = STATE.tempoRate + STATE.jogOffset;
-
   rate = Math.max(minPlaybackRate, Math.min(maxPlaybackRate, rate));
   video.playbackRate = rate;
 
-  console.log("Final Rate:", rate);
-}
-
-function getVideo() {
-  return document.querySelector("video");
+  console.log(`Deck ${assignedDeck ?? "-"} Final Rate:`, rate);
 }
 
 function setPlayPause() {
   const video = getVideo();
   if (!video) return;
   if (video.paused) {
-    video.play().catch(() => { });
+    video.play().catch(() => {});
   } else {
     video.pause();
   }
@@ -108,57 +123,63 @@ function setPlayPause() {
 function setCue() {
   const video = getVideo();
   if (!video) return;
-  const playing = !video.paused;
-  if (playing) {
-    if (STATE.cueTime !== null) {
-      video.currentTime = STATE.cueTime;
-      console.log("Cue recalled", STATE.cueTime);
-    } else {
-      STATE.cueTime = video.currentTime;
-      console.log("Cue saved", STATE.cueTime);
-    }
-  } else {
-    // 停止中: 常に設定
-    STATE.cueTime = video.currentTime;
-    console.log("Cue saved", STATE.cueTime);
+
+  if (!video.paused && STATE.cueTime !== null) {
+    video.currentTime = STATE.cueTime;
+    console.log(`Deck ${assignedDeck} cue recalled`, STATE.cueTime);
+    return;
   }
+
+  STATE.cueTime = video.currentTime;
+  console.log(`Deck ${assignedDeck} cue saved`, STATE.cueTime);
 }
 
 function clearHotcueLights() {
-  console.log("Clearing hotcue lights");
-  if (!midiOut || !Array.isArray(mapping.hotcue)) return;
+  if (!midiOut || !Array.isArray(mapping.hotcue) || assignedDeck == null) return;
+
+  const hotcueTargets = mapping.hotcue
+    .map((_, index) => getResolvedHotcue(index))
+    .filter(Boolean);
   const channels = new Set();
-  mapping.hotcue.forEach((target) => {
-    if (!target) return;
-    const { channel, note } = target;
-    channels.add(channel);
-    // note off (velocity 0) for hotcue button
-    midiOut.send([0x90 | channel, note, 0]);
-    // and explicit note-off status
-    midiOut.send([0x80 | channel, note, 0]);
-  });
-  // All Notes Off to ensure all lights are cleared for mapped channels
-  channels.forEach((ch) => {
-    midiOut.send([0xb0 | ch, 0x7b, 0x00]);
+
+  for (const target of hotcueTargets) {
+    channels.add(target.channel);
+    midiOut.send([0x90 | target.channel, target.note, 0]);
+    midiOut.send([0x80 | target.channel, target.note, 0]);
+  }
+
+  channels.forEach((channel) => {
+    midiOut.send([0xb0 | channel, 0x7b, 0x00]);
   });
 }
 
+function syncHotcueLights() {
+  if (!midiOut || assignedDeck == null) return;
+
+  STATE.hotcues.forEach((time, index) => {
+    const target = getResolvedHotcue(index);
+    if (!target) return;
+    midiOut.send([0x90 | target.channel, target.note, time != null ? 127 : 0]);
+  });
+}
 
 function setHotcue(index) {
   const video = getVideo();
   if (!video || index == null) return;
+
   if (STATE.hotcues[index] == null) {
     STATE.hotcues[index] = video.currentTime;
-    console.log(`Hotcue ${index} saved`, STATE.hotcues[index]);
-    // ライトオン
-    if (midiOut && mapping.hotcue[index]) {
-      const { channel, note } = mapping.hotcue[index];
-      midiOut.send([0x90 | channel, note, 127]);
+    console.log(`Deck ${assignedDeck} hotcue ${index} saved`, STATE.hotcues[index]);
+
+    const target = getResolvedHotcue(index);
+    if (midiOut && target) {
+      midiOut.send([0x90 | target.channel, target.note, 127]);
     }
-  } else {
-    video.currentTime = STATE.hotcues[index];
-    console.log(`Hotcue ${index} recalled`, STATE.hotcues[index]);
+    return;
   }
+
+  video.currentTime = STATE.hotcues[index];
+  console.log(`Deck ${assignedDeck} hotcue ${index} recalled`, STATE.hotcues[index]);
 }
 
 function setTempo(rate) {
@@ -166,26 +187,7 @@ function setTempo(rate) {
   applyPlaybackRate();
 }
 
-function jog(offset) {
-  const sensitivity = mapping.jog.sensitivity ?? 0.5;
-
-  // 一時的なピッチ変化
-  STATE.jogOffset = offset * sensitivity;
-
-  applyPlaybackRate();
-
-  // 入力止まったら戻す
-  if (STATE.jogResetTimer) {
-    clearTimeout(STATE.jogResetTimer);
-  }
-
-  STATE.jogResetTimer = setTimeout(() => {
-    STATE.jogOffset = 0;
-    applyPlaybackRate();
-  }, 80);
-}
-
-function decodeRelativeValue(raw, format = "signedBit") {
+function decodeRelativeValue(raw, format = "binaryOffset") {
   if (raw == null) return 0;
   if (raw === 0 || raw === 64) return 0;
 
@@ -210,14 +212,13 @@ function decodeRelativeValue(raw, format = "signedBit") {
 }
 
 function jog(delta) {
-  const sensitivity = mapping.jog.sensitivity ?? 0.03;
+  const sensitivity = mapping.jog.sensitivity ?? 0.10;
   const negativeSensitivityMultiplier = mapping.jog.negativeSensitivityMultiplier ?? 1.0;
   const maxOffset = mapping.jog.maxOffset ?? 1.5;
   const resetDelayMs = mapping.jog.resetDelayMs ?? 160;
   const scaledDelta = delta < 0 ? delta * negativeSensitivityMultiplier : delta;
 
   STATE.jogOffset = Math.max(-maxOffset, Math.min(maxOffset, scaledDelta * sensitivity));
-
   applyPlaybackRate();
 
   if (STATE.jogResetTimer) {
@@ -231,43 +232,48 @@ function jog(delta) {
 }
 
 function midiMatch(event, target) {
-  if (!target || !event) return false;
+  if (!target || !event || assignedDeck == null) return false;
+
   const status = event.data[0];
   const type = status & 0xf0;
   const channel = status & 0x0f;
+
   if (target.channel != null && channel !== target.channel) return false;
 
   if (target.type === "note") {
     return type === 0x90 && event.data[1] === target.note && event.data[2] > 0;
   }
+
   if (target.type === "cc") {
     return type === 0xb0 && event.data[1] === target.cc;
   }
+
   if (target.type === "cc14") {
     return type === 0xb0 && (event.data[1] === target.cc || event.data[1] === target.cc + 32);
   }
+
   return false;
 }
 
 function handleMidiEvent(event) {
-  console.log("MIDI event received:", Array.from(event.data));
-  console.log("mapping", mapping);
-  console.log("mapping.jog", mapping.jog);
+  if (assignedDeck == null) return;
 
-  if (mapping.playPause && midiMatch(event, mapping.playPause)) {
+  const playPauseTarget = resolveDeckTarget(mapping.playPause);
+  if (playPauseTarget && midiMatch(event, playPauseTarget)) {
     setPlayPause();
     return;
   }
 
-  if (mapping.cue && midiMatch(event, mapping.cue)) {
+  const cueTarget = resolveDeckTarget(mapping.cue);
+  if (cueTarget && midiMatch(event, cueTarget)) {
     setCue();
     return;
   }
 
   if (Array.isArray(mapping.hotcue)) {
-    for (let idx = 0; idx < mapping.hotcue.length; idx++) {
-      if (midiMatch(event, mapping.hotcue[idx])) {
-        setHotcue(idx);
+    for (let index = 0; index < mapping.hotcue.length; index++) {
+      if (midiMatch(event, getResolvedHotcue(index))) {
+        setHotcue(index);
         return;
       }
     }
@@ -276,17 +282,18 @@ function handleMidiEvent(event) {
   const status = event.data[0];
   const type = status & 0xf0;
   const channel = status & 0x0f;
+  const tempoTarget = resolveDeckTarget(mapping.tempo);
 
-  if (mapping.tempo && midiMatch(event, mapping.tempo)) {
+  if (tempoTarget && midiMatch(event, tempoTarget)) {
     const cc = event.data[1];
     const value = event.data[2];
-    if (cc === mapping.tempo.cc) {
-      // MSB
+
+    if (cc === tempoTarget.cc) {
       STATE.tempoValue = (STATE.tempoValue & 0x7f) | (value << 7);
-    } else if (cc === mapping.tempo.cc + 32) {
-      // LSB
+    } else if (cc === tempoTarget.cc + 32) {
       STATE.tempoValue = (STATE.tempoValue & 0x3f80) | value;
     }
+
     const centerValue = 8192;
     const centerRate = 1.0;
     const minValue = mapping.tempo.minValue ?? 0;
@@ -294,90 +301,111 @@ function handleMidiEvent(event) {
     const minRate = mapping.tempo.minRate ?? 0.5;
     const maxRate = mapping.tempo.maxRate ?? 2.0;
     const clamped = Math.max(minValue, Math.min(maxValue, STATE.tempoValue));
+
     let rate;
     if (clamped >= centerValue) {
       rate = centerRate + (clamped - centerValue) / (maxValue - centerValue) * (maxRate - centerRate);
     } else {
       rate = centerRate + (clamped - centerValue) / (centerValue - minValue) * (centerRate - minRate);
     }
+
     setTempo(rate);
     return;
   }
 
+  const jogTarget = resolveDeckTarget(mapping.jog);
   const jogCcs = Array.isArray(mapping.jog?.ccs)
     ? mapping.jog.ccs
     : (mapping.jog?.cc != null ? [mapping.jog.cc] : []);
   const scratchCcs = Array.isArray(mapping.jog?.scratchCcs) ? mapping.jog.scratchCcs : [];
   const allJogCcs = new Set([...jogCcs, ...scratchCcs]);
 
-  if (mapping.jog && type === 0xb0 && channel === mapping.jog.channel && allJogCcs.has(event.data[1])) {
+  if (jogTarget && type === 0xb0 && channel === jogTarget.channel && allJogCcs.has(event.data[1])) {
     const cc = event.data[1];
     const raw = event.data[2];
-    const relativeFormat = mapping.jog.relativeFormat ?? "signedBit";
+    const relativeFormat = mapping.jog.relativeFormat ?? "binaryOffset";
     const delta = mapping.jog.mode === "relative"
       ? decodeRelativeValue(raw, relativeFormat)
       : (raw - 64) / 64;
     const direction = mapping.jog.invert ? -1 : 1;
     const effectiveDelta = (scratchCcs.includes(cc) ? delta * 0.5 : delta) * direction;
 
-    console.log("Jog detected", { cc, raw, delta, effectiveDelta, relativeFormat });
+    console.log(`Deck ${assignedDeck} jog`, { cc, raw, delta, effectiveDelta, relativeFormat });
 
-    if (effectiveDelta !== 0) jog(effectiveDelta);
-    return;
+    if (effectiveDelta !== 0) {
+      jog(effectiveDelta);
+    }
   }
 }
 
 async function setupMidi() {
+  if (midiInitialized || assignedDeck == null) return;
+
   if (typeof navigator.requestMIDIAccess !== "function") {
-    console.warn("Web MIDI API is not available in this context. Chrome may not support MIDI in service workers.");
+    console.warn("Web MIDI API is not available in this context.");
     return;
   }
 
   try {
-    const access = await navigator.requestMIDIAccess();
+    midiAccess = await navigator.requestMIDIAccess();
 
     function attachInput(input) {
       if (!input) return;
       input.onmidimessage = handleMidiEvent;
     }
 
-    access.inputs.forEach(attachInput);
-
-    access.onstatechange = (ev) => {
-      if (ev.port.type === "input" && ev.port.state === "connected") {
-        ev.port.onmidimessage = handleMidiEvent;
+    midiAccess.inputs.forEach(attachInput);
+    midiAccess.onstatechange = (event) => {
+      if (event.port.type === "input" && event.port.state === "connected") {
+        event.port.onmidimessage = handleMidiEvent;
       }
     };
 
-    // MIDI OUT
-    access.outputs.forEach(out => midiOut = out);
+    midiAccess.outputs.forEach((output) => {
+      midiOut = output;
+    });
 
-    // 読み込み時に HOTCUE ライトを一括消灯
-    clearHotcueLights();
-
-    console.log("MIDI initialized", Array.from(access.inputs.values()).map((p) => p.name), "OUT:", midiOut ? midiOut.name : "none");
-  } catch (err) {
-    console.error("MIDI access error", err);
+    midiInitialized = true;
+    syncHotcueLights();
+    console.log(`Deck ${assignedDeck} MIDI initialized`, Array.from(midiAccess.inputs.values()).map((port) => port.name));
+  } catch (error) {
+    console.error("MIDI access error", error);
   }
 }
 
 function loadMapping() {
   chrome.storage.sync.get(["midiMapping"], (data) => {
     mapping = normalizeMapping(data.midiMapping);
-    // 既存HOTCUEのライトオン
-    if (midiOut) {
-      STATE.hotcues.forEach((time, idx) => {
-        if (time !== null && mapping.hotcue[idx]) {
-          const { channel, note } = mapping.hotcue[idx];
-          midiOut.send([0x90 | channel, note, 127]);
-        }
-      });
+    syncHotcueLights();
+  });
+}
+
+function updateDeckAssignment(nextDeck) {
+  if (assignedDeck === nextDeck) return;
+
+  clearHotcueLights();
+  assignedDeck = nextDeck;
+  console.log("Assigned deck changed", assignedDeck);
+
+  if (assignedDeck != null) {
+    setupMidi();
+    syncHotcueLights();
+  }
+}
+
+function registerYoutubeWindow() {
+  chrome.runtime.sendMessage({ cmd: "registerYoutubeWindow" }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.warn("Failed to register YouTube window", chrome.runtime.lastError.message);
+      return;
     }
+
+    updateDeckAssignment(response?.deck ?? null);
   });
 }
 
 loadMapping();
-setupMidi();
+registerYoutubeWindow();
 
 window.addEventListener("beforeunload", () => {
   clearHotcueLights();
@@ -386,17 +414,25 @@ window.addEventListener("beforeunload", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
     clearHotcueLights();
+  } else {
+    registerYoutubeWindow();
   }
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.midiMapping) {
     mapping = normalizeMapping(changes.midiMapping.newValue);
+    syncHotcueLights();
   }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message) => {
   if (!message || !message.cmd) return;
+
+  if (message.cmd === "assignDeck") {
+    updateDeckAssignment(message.deck ?? null);
+    return;
+  }
 
   switch (message.cmd) {
     case "playPause":

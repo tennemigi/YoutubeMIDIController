@@ -1,189 +1,109 @@
-const DEFAULT_MAP = {
-  playPause: { type: "note", channel: 0, note: 11 },
-  cue: { type: "note", channel: 0, note: 12 },
-  tempo: { type: "cc14", channel: 0, cc: 0, minValue: 0, maxValue: 16383, minRate: 0.5, maxRate: 2.0 },
-  jog: {
-    type: "cc",
-    channel: 0,
-    ccs: [33, 35],
-    scratchCcs: [34],
-    mode: "relative",
-    relativeFormat: "binaryOffset",
-    invert: false,
-    sensitivity: 0.08,
-    negativeSensitivityMultiplier: 1.0,
-    maxOffset: 1.5,
-    resetDelayMs: 160
-  },
-  hotcue: [
-    { type: "note", channel: 7, note: 0 },
-    { type: "note", channel: 7, note: 1 },
-    { type: "note", channel: 7, note: 2 },
-    { type: "note", channel: 7, note: 3 },
-    { type: "note", channel: 7, note: 4 },
-    { type: "note", channel: 7, note: 5 },
-    { type: "note", channel: 7, note: 6 },
-    { type: "note", channel: 7, note: 7 }
-  ]
-};
+const YOUTUBE_URL_PATTERN = "https://www.youtube.com/*";
 
-let mapping = null;
+let recomputeTimer = null;
+let lastDeckAssignments = new Map();
 
-const STATE = {
-  tempoValue: 8192  // 14-bit center
-};
-
-function normalizeMapping(raw) {
-  if (!raw || typeof raw !== "object") return DEFAULT_MAP;
-
-  const mergedJog = {
-    ...DEFAULT_MAP.jog,
-    ...(raw.jog || {})
-  };
-
-  if (
-    mergedJog.relativeFormat === "signedBit" &&
-    (mergedJog.cc === 34 || mergedJog.ccs?.includes(33) || mergedJog.ccs?.includes(35))
-  ) {
-    mergedJog.relativeFormat = DEFAULT_MAP.jog.relativeFormat;
-    mergedJog.invert = DEFAULT_MAP.jog.invert;
-    mergedJog.sensitivity = DEFAULT_MAP.jog.sensitivity;
-    mergedJog.negativeSensitivityMultiplier = DEFAULT_MAP.jog.negativeSensitivityMultiplier;
-    mergedJog.ccs = DEFAULT_MAP.jog.ccs;
-    mergedJog.scratchCcs = DEFAULT_MAP.jog.scratchCcs;
-  }
-
-  const out = {
-    ...DEFAULT_MAP,
-    ...raw,
-    tempo: {
-      ...DEFAULT_MAP.tempo,
-      ...(raw.tempo || {})
-    },
-    jog: {
-      ...mergedJog
-    }
-  };
-  if (!Array.isArray(out.hotcue)) out.hotcue = DEFAULT_MAP.hotcue;
-  return out;
-}
-
-async function loadMapping() {
-  const data = await chrome.storage.sync.get(["midiMapping"]);
-  mapping = normalizeMapping(data.midiMapping);
-}
-
-function midiMatch(event, target) {
-  if (!target || !event) return false;
-  const status = event.data[0];
-  const type = status & 0xf0;
-  const channel = status & 0x0f;
-  if (target.channel != null && channel !== target.channel) return false;
-
-  if (target.type === "note") {
-    return type === 0x90 && event.data[1] === target.note && event.data[2] > 0;
-  }
-  if (target.type === "cc") {
-    return type === 0xb0 && event.data[1] === target.cc;
-  }
-  if (target.type === "cc14") {
-    return type === 0xb0 && (event.data[1] === target.cc || event.data[1] === target.cc + 32);
-  }
-  return false;
-}
-
-function sendToYoutubeTabs(message) {
-  chrome.tabs.query({ url: "https://www.youtube.com/*" }, (tabs) => {
-    for (const tab of tabs) {
-      chrome.tabs.sendMessage(tab.id, message, () => {
-        if (chrome.runtime.lastError) {
-          // ignore errors when tab isn't ready or content script not loaded
-        }
-      });
+function sendMessageToTab(tabId, message) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, message, () => {
+    if (chrome.runtime.lastError) {
+      // ignore tabs that are not ready yet
     }
   });
 }
 
-function handleMidiEvent(event) {
-  if (!mapping) return;
-  const status = event.data[0];
-  const type = status & 0xf0;
-  const channel = status & 0x0f;
+async function getYoutubeTabs() {
+  const tabs = await chrome.tabs.query({ url: YOUTUBE_URL_PATTERN });
+  return tabs.filter((tab) => tab.id != null && tab.windowId != null);
+}
 
-  if (mapping.playPause && midiMatch(event, mapping.playPause)) {
-    sendToYoutubeTabs({ cmd: "playPause" });
-    return;
-  }
+function pickDeckTabs(tabs) {
+  const bestTabPerWindow = new Map();
 
-  if (mapping.cue && midiMatch(event, mapping.cue)) {
-    sendToYoutubeTabs({ cmd: "cue" });
-    return;
-  }
-
-  if (Array.isArray(mapping.hotcue)) {
-    for (let idx = 0; idx < mapping.hotcue.length; idx++) {
-      if (midiMatch(event, mapping.hotcue[idx])) {
-        sendToYoutubeTabs({ cmd: "hotcue", index: idx });
-        return;
-      }
+  for (const tab of tabs) {
+    const existing = bestTabPerWindow.get(tab.windowId);
+    if (!existing || tab.active) {
+      bestTabPerWindow.set(tab.windowId, tab);
     }
   }
 
-  if (mapping.tempo && midiMatch(event, mapping.tempo)) {
-    const cc = event.data[1];
-    const value = event.data[2];
-    if (cc === mapping.tempo.cc) {
-      // LSB
-      STATE.tempoValue = (STATE.tempoValue & 0x3f80) | value;
-    } else if (cc === mapping.tempo.cc + 32) {
-      // MSB
-      STATE.tempoValue = (STATE.tempoValue & 0x7f) | (value << 7);
+  return [...bestTabPerWindow.values()]
+    .sort((left, right) => left.windowId - right.windowId)
+    .slice(0, 2);
+}
+
+async function recomputeDeckAssignments() {
+  const tabs = await getYoutubeTabs();
+  const deckTabs = pickDeckTabs(tabs);
+  const nextAssignments = new Map(deckTabs.map((tab, index) => [tab.id, index + 1]));
+
+  for (const tab of tabs) {
+    const nextDeck = nextAssignments.get(tab.id) ?? null;
+    const previousDeck = lastDeckAssignments.get(tab.id) ?? null;
+    if (nextDeck !== previousDeck) {
+      sendMessageToTab(tab.id, { cmd: "assignDeck", deck: nextDeck });
     }
-    const centerValue = 8192;
-    const centerRate = 1.0;
-    const minValue = mapping.tempo.minValue ?? 0;
-    const maxValue = mapping.tempo.maxValue ?? 16383;
-    const minRate = mapping.tempo.minRate ?? 0.5;
-    const maxRate = mapping.tempo.maxRate ?? 2.0;
-    const clamped = Math.max(minValue, Math.min(maxValue, STATE.tempoValue));
-    let rate;
-    if (clamped >= centerValue) {
-      rate = centerRate + (clamped - centerValue) / (maxValue - centerValue) * (maxRate - centerRate);
-    } else {
-      rate = centerRate + (clamped - centerValue) / (centerValue - minValue) * (centerRate - minRate);
-    }
-    sendToYoutubeTabs({ cmd: "tempo", rate });
-    return;
   }
 
-  if (mapping.jog && type === 0xb0 && channel === mapping.jog.channel && event.data[1] === mapping.jog.cc) {
-    const raw = event.data[2];
-    let delta = 0;
-    if (mapping.jog.mode === "relative") {
-      if (raw === 0) delta = 0;
-      else if (raw < 65) delta = raw - 64;
-      else delta = raw - 64;
-    } else {
-      // absolute: map 0-127 to -1.0..+1.0 around center
-      delta = (raw - 64) / 64;
+  for (const [tabId] of lastDeckAssignments) {
+    if (!nextAssignments.has(tabId)) {
+      sendMessageToTab(tabId, { cmd: "assignDeck", deck: null });
     }
-    const sensitivity = mapping.jog.sensitivity ?? 0.5;
-    const offset = delta * sensitivity;
-    if (offset !== 0) sendToYoutubeTabs({ cmd: "jog", offset });
-    return;
   }
+
+  lastDeckAssignments = nextAssignments;
+  return nextAssignments;
+}
+
+function scheduleRecompute() {
+  if (recomputeTimer) {
+    clearTimeout(recomputeTimer);
+  }
+
+  recomputeTimer = setTimeout(() => {
+    recomputeTimer = null;
+    recomputeDeckAssignments().catch((error) => {
+      console.error("Failed to recompute deck assignments", error);
+    });
+  }, 100);
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  loadMapping();
+  scheduleRecompute();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  loadMapping();
+  scheduleRecompute();
 });
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "sync" && changes.midiMapping) {
-    mapping = normalizeMapping(changes.midiMapping.newValue);
-  }
+chrome.tabs.onActivated.addListener(() => {
+  scheduleRecompute();
+});
+
+chrome.tabs.onUpdated.addListener(() => {
+  scheduleRecompute();
+});
+
+chrome.tabs.onRemoved.addListener(() => {
+  scheduleRecompute();
+});
+
+chrome.windows.onRemoved.addListener(() => {
+  scheduleRecompute();
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.cmd !== "registerYoutubeWindow") return;
+
+  recomputeDeckAssignments()
+    .then((assignments) => {
+      const tabId = sender.tab?.id;
+      sendResponse({ deck: tabId != null ? assignments.get(tabId) ?? null : null });
+    })
+    .catch((error) => {
+      console.error("Failed to register YouTube window", error);
+      sendResponse({ deck: null });
+    });
+
+  return true;
 });

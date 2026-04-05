@@ -4,7 +4,7 @@
   "short_name": "YT MIDI",
   "description": "DDJ-FLX4向けのYouTube再生操作をMIDIで制御します。コンフィグでキーマップ変更可能。",
   "version": "1.0.0",
-  "permissions": ["storage", "activeTab", "scripting", "midi"],
+  "permissions": ["storage", "activeTab", "scripting", "midi", "tabs"],
   "host_permissions": ["https://www.youtube.com/*"],
   "background": {
     "service_worker": "background.js"
