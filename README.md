@@ -11,6 +11,7 @@ YouTube を 2 つのウィンドウで開くと、それぞれを Deck 1 / Deck 
 
 - `PLAY/PAUSE` で再生 / 一時停止
 - `CUE` でキューポイントの保存 / 呼び出し
+- `CH CUE` でミュート切り替えとミュート状態の LED 表示
 - `IN / OUT / EXIT` でループの設定 / 開始 / 解除
 - `HOT CUE 1-8` でホットキューの保存 / 呼び出し
 - `TEMPO` フェーダーで再生速度変更
@@ -61,6 +62,7 @@ YouTube を 2 つのウィンドウで開くと、それぞれを Deck 1 / Deck 
 
 - `Play/Pause` で再生 / 一時停止
 - `Cue` でキューポイント保存 / 呼び出し
+- `CH CUE` でミュート切り替え
 - `IN` でループ開始位置を指定
 - `OUT` でループ終了位置を指定してループ開始
 - `EXIT` でループ解除
@@ -76,6 +78,9 @@ YouTube を 2 つのウィンドウで開くと、それぞれを Deck 1 / Deck 
 - `Cue`
   - CUE 未保存時は現在位置を保存します
   - CUE 保存済み時は保存位置へ戻ります
+- `CH CUE`
+  - YouTube のミュート状態を切り替えます
+  - ミュートではないときはボタン LED が点灯します
 - `IN`
   - 現在位置をループ開始位置として保存します
   - ボタン LED が点灯します
@@ -122,6 +127,8 @@ YouTube を 2 つのウィンドウで開くと、それぞれを Deck 1 / Deck 
   - `note`, channel `0`, note `11`
 - `Cue`
   - `note`, channel `0`, note `12`
+- `CH CUE`
+  - `note`, channel `0`, note `84`
 - `Loop In`
   - `note`, channel `0`, note `16`
 - `Loop Out`

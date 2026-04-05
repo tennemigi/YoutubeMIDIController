@@ -1,6 +1,7 @@
 const DEFAULT_MAP = {
   playPause: { type: "note", channel: 0, note: 11 },
   cue: { type: "note", channel: 0, note: 12 },
+  chCue: { type: "note", channel: 0, note: 84 },
   loop: {
     in: { type: "note", channel: 0, note: 16 },
     out: { type: "note", channel: 0, note: 17 },

@@ -1,6 +1,7 @@
 const DEFAULT_MAP = {
   playPause: { type: "note", channel: 0, note: 11 },
   cue: { type: "note", channel: 0, note: 12 },
+  chCue: { type: "note", channel: 0, note: 84 },
   loop: {
     in: { type: "note", channel: 0, note: 16 },
     out: { type: "note", channel: 0, note: 17 },
@@ -55,6 +56,7 @@ let midiOut = null;
 let midiInitialized = false;
 let currentPageKey = getPageKey();
 let deckBadgeElement = null;
+let currentVideoElement = null;
 
 function debugLog(...args) {
   if (DEBUG) {
@@ -85,6 +87,10 @@ function normalizeMapping(raw) {
   return {
     ...DEFAULT_MAP,
     ...raw,
+    chCue: {
+      ...DEFAULT_MAP.chCue,
+      ...(raw.chCue || {})
+    },
     loop: {
       ...DEFAULT_MAP.loop,
       ...(raw.loop || {})
@@ -133,6 +139,11 @@ function getResolvedHotcue(index) {
 function getResolvedLoopTarget(name) {
   if (!mapping.loop || !mapping.loop[name]) return null;
   return resolveDeckTarget(mapping.loop[name]);
+}
+
+function getResolvedChCueTarget() {
+  if (!mapping.chCue) return null;
+  return resolveDeckTarget(mapping.chCue);
 }
 
 function applyPlaybackRate() {
@@ -251,6 +262,16 @@ function updateLoopLights() {
   }
 }
 
+function updateChCueLight() {
+  if (!midiOut || assignedDeck == null) return;
+
+  const target = getResolvedChCueTarget();
+  const video = getVideo();
+  if (!target || !video) return;
+
+  midiOut.send([0x90 | target.channel, target.note, video.muted ? 0 : 127]);
+}
+
 function syncHotcueLights() {
   if (!midiOut || assignedDeck == null) return;
 
@@ -261,6 +282,7 @@ function syncHotcueLights() {
   });
 
   updateLoopLights();
+  updateChCueLight();
 }
 
 function setHotcue(index) {
@@ -287,6 +309,14 @@ function setTempo(rate) {
   applyPlaybackRate();
 }
 
+function toggleMute() {
+  const video = getVideo();
+  if (!video) return;
+
+  video.muted = !video.muted;
+  updateChCueLight();
+}
+
 function stopLoopMonitor() {
   if (!STATE.loopMonitorTimer) return;
   clearInterval(STATE.loopMonitorTimer);
@@ -311,6 +341,27 @@ function clearLoop() {
   STATE.loopActive = false;
   stopLoopMonitor();
   updateLoopLights();
+}
+
+function handleVideoVolumeChange() {
+  updateChCueLight();
+}
+
+function bindVideoEvents() {
+  const video = getVideo();
+  if (video === currentVideoElement) return;
+
+  if (currentVideoElement) {
+    currentVideoElement.removeEventListener("volumechange", handleVideoVolumeChange);
+  }
+
+  currentVideoElement = video;
+
+  if (currentVideoElement) {
+    currentVideoElement.addEventListener("volumechange", handleVideoVolumeChange);
+  }
+
+  updateChCueLight();
 }
 
 function setLoopIn() {
@@ -462,6 +513,12 @@ function handleMidiEvent(event) {
     return;
   }
 
+  const chCueTarget = getResolvedChCueTarget();
+  if (chCueTarget && midiMatch(event, chCueTarget)) {
+    toggleMute();
+    return;
+  }
+
   const loopInTarget = getResolvedLoopTarget("in");
   if (loopInTarget && midiMatch(event, loopInTarget)) {
     setLoopIn();
@@ -591,6 +648,7 @@ function loadMapping() {
   chrome.storage.sync.get(["midiMapping"], (data) => {
     mapping = normalizeMapping(data.midiMapping);
     updateDeckBadge();
+    bindVideoEvents();
     syncHotcueLights();
   });
 }
@@ -606,6 +664,7 @@ function updateDeckAssignment(nextDeck) {
 
   if (assignedDeck != null) {
     setupMidi();
+    bindVideoEvents();
     syncHotcueLights();
   }
 }
@@ -624,6 +683,7 @@ function registerYoutubeWindow() {
 loadMapping();
 registerYoutubeWindow();
 updateDeckBadge();
+bindVideoEvents();
 
 window.addEventListener("beforeunload", () => {
   clearHotcueLights();
@@ -634,6 +694,7 @@ document.addEventListener("visibilitychange", () => {
     clearHotcueLights();
   } else {
     updateDeckBadge();
+    bindVideoEvents();
     registerYoutubeWindow();
   }
 });
@@ -644,6 +705,7 @@ function handlePotentialNavigation(reason) {
 
   currentPageKey = nextPageKey;
   resetPlaybackState(reason);
+  bindVideoEvents();
   updateDeckBadge();
 }
 
@@ -662,6 +724,7 @@ window.addEventListener("hashchange", () => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.midiMapping) {
     mapping = normalizeMapping(changes.midiMapping.newValue);
+    bindVideoEvents();
     syncHotcueLights();
   }
 });
