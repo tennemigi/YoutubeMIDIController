@@ -1,6 +1,11 @@
 const DEFAULT_MAP = {
   playPause: { type: "note", channel: 0, note: 11 },
   cue: { type: "note", channel: 0, note: 12 },
+  loop: {
+    in: { type: "note", channel: 0, note: 16 },
+    out: { type: "note", channel: 0, note: 17 },
+    exit: { type: "note", channel: 0, note: 77 }
+  },
   tempo: { type: "cc14", channel: 0, cc: 0, minValue: 0, maxValue: 16383, minRate: 0.5, maxRate: 2.0 },
   jog: {
     type: "cc",

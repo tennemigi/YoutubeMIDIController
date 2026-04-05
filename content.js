@@ -1,6 +1,11 @@
 const DEFAULT_MAP = {
   playPause: { type: "note", channel: 0, note: 11 },
   cue: { type: "note", channel: 0, note: 12 },
+  loop: {
+    in: { type: "note", channel: 0, note: 16 },
+    out: { type: "note", channel: 0, note: 17 },
+    exit: { type: "note", channel: 0, note: 77 }
+  },
   tempo: { type: "cc14", channel: 0, cc: 0, minValue: 0, maxValue: 16383, minRate: 0.5, maxRate: 2.0 },
   jog: {
     type: "cc",
@@ -33,6 +38,10 @@ const DEBUG = false;
 const STATE = {
   cueTime: null,
   hotcues: Array(8).fill(null),
+  loopStartTime: null,
+  loopEndTime: null,
+  loopActive: false,
+  loopMonitorTimer: null,
   tempoValue: 8192,
   tempoRate: 1.0,
   jogOffset: 0,
@@ -76,6 +85,10 @@ function normalizeMapping(raw) {
   return {
     ...DEFAULT_MAP,
     ...raw,
+    loop: {
+      ...DEFAULT_MAP.loop,
+      ...(raw.loop || {})
+    },
     tempo: {
       ...DEFAULT_MAP.tempo,
       ...(raw.tempo || {})
@@ -115,6 +128,11 @@ function resolveDeckTarget(target, targetKind = "main") {
 function getResolvedHotcue(index) {
   if (!Array.isArray(mapping.hotcue) || !mapping.hotcue[index]) return null;
   return resolveDeckTarget(mapping.hotcue[index], "hotcue");
+}
+
+function getResolvedLoopTarget(name) {
+  if (!mapping.loop || !mapping.loop[name]) return null;
+  return resolveDeckTarget(mapping.loop[name]);
 }
 
 function applyPlaybackRate() {
@@ -215,6 +233,24 @@ function clearHotcueLights() {
   });
 }
 
+function updateLoopLights() {
+  if (!midiOut || assignedDeck == null || !mapping.loop) return;
+
+  const loopInTarget = getResolvedLoopTarget("in");
+  const loopOutTarget = getResolvedLoopTarget("out");
+  const loopExitTarget = getResolvedLoopTarget("exit");
+
+  if (loopInTarget) {
+    midiOut.send([0x90 | loopInTarget.channel, loopInTarget.note, STATE.loopStartTime != null ? 127 : 0]);
+  }
+  if (loopOutTarget) {
+    midiOut.send([0x90 | loopOutTarget.channel, loopOutTarget.note, STATE.loopActive ? 127 : 0]);
+  }
+  if (loopExitTarget) {
+    midiOut.send([0x90 | loopExitTarget.channel, loopExitTarget.note, STATE.loopActive ? 127 : 0]);
+  }
+}
+
 function syncHotcueLights() {
   if (!midiOut || assignedDeck == null) return;
 
@@ -223,6 +259,8 @@ function syncHotcueLights() {
     if (!target) return;
     midiOut.send([0x90 | target.channel, target.note, time != null ? 127 : 0]);
   });
+
+  updateLoopLights();
 }
 
 function setHotcue(index) {
@@ -249,9 +287,63 @@ function setTempo(rate) {
   applyPlaybackRate();
 }
 
+function stopLoopMonitor() {
+  if (!STATE.loopMonitorTimer) return;
+  clearInterval(STATE.loopMonitorTimer);
+  STATE.loopMonitorTimer = null;
+}
+
+function startLoopMonitor() {
+  stopLoopMonitor();
+
+  STATE.loopMonitorTimer = setInterval(() => {
+    const video = getVideo();
+    if (!video || !STATE.loopActive || STATE.loopStartTime == null || STATE.loopEndTime == null) return;
+    if (video.currentTime < STATE.loopEndTime) return;
+
+    video.currentTime = STATE.loopStartTime;
+  }, 50);
+}
+
+function clearLoop() {
+  STATE.loopStartTime = null;
+  STATE.loopEndTime = null;
+  STATE.loopActive = false;
+  stopLoopMonitor();
+  updateLoopLights();
+}
+
+function setLoopIn() {
+  const video = getVideo();
+  if (!video) return;
+
+  STATE.loopStartTime = video.currentTime;
+  STATE.loopEndTime = null;
+  STATE.loopActive = false;
+  stopLoopMonitor();
+  updateLoopLights();
+}
+
+function setLoopOut() {
+  const video = getVideo();
+  if (!video || STATE.loopStartTime == null) return;
+
+  const start = Math.min(STATE.loopStartTime, video.currentTime);
+  const end = Math.max(STATE.loopStartTime, video.currentTime);
+
+  if (Math.abs(end - start) < 0.05) return;
+
+  STATE.loopStartTime = start;
+  STATE.loopEndTime = end;
+  STATE.loopActive = true;
+  updateLoopLights();
+  startLoopMonitor();
+}
+
 function resetPlaybackState(reason = "manual") {
   STATE.cueTime = null;
   STATE.hotcues = Array(8).fill(null);
+  clearLoop();
   STATE.tempoValue = 8192;
   STATE.tempoRate = 1.0;
   STATE.jogOffset = 0;
@@ -367,6 +459,24 @@ function handleMidiEvent(event) {
   const cueTarget = resolveDeckTarget(mapping.cue);
   if (cueTarget && midiMatch(event, cueTarget)) {
     setCue();
+    return;
+  }
+
+  const loopInTarget = getResolvedLoopTarget("in");
+  if (loopInTarget && midiMatch(event, loopInTarget)) {
+    setLoopIn();
+    return;
+  }
+
+  const loopOutTarget = getResolvedLoopTarget("out");
+  if (loopOutTarget && midiMatch(event, loopOutTarget)) {
+    setLoopOut();
+    return;
+  }
+
+  const loopExitTarget = getResolvedLoopTarget("exit");
+  if (loopExitTarget && midiMatch(event, loopExitTarget)) {
+    clearLoop();
     return;
   }
 
