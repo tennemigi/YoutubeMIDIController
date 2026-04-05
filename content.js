@@ -28,6 +28,8 @@ const DEFAULT_MAP = {
   ]
 };
 
+const DEBUG = false;
+
 const STATE = {
   cueTime: null,
   hotcues: Array(8).fill(null),
@@ -44,6 +46,12 @@ let midiOut = null;
 let midiInitialized = false;
 let currentPageKey = getPageKey();
 let deckBadgeElement = null;
+
+function debugLog(...args) {
+  if (DEBUG) {
+    console.log(...args);
+  }
+}
 
 function normalizeMapping(raw) {
   if (!raw || typeof raw !== "object") return DEFAULT_MAP;
@@ -119,7 +127,7 @@ function applyPlaybackRate() {
   rate = Math.max(minPlaybackRate, Math.min(maxPlaybackRate, rate));
   video.playbackRate = rate;
 
-  console.log(`Deck ${assignedDeck ?? "-"} Final Rate:`, rate);
+  debugLog(`Deck ${assignedDeck ?? "-"} Final Rate:`, rate);
 }
 
 function ensureDeckBadge() {
@@ -180,12 +188,12 @@ function setCue() {
 
   if (!video.paused && STATE.cueTime !== null) {
     video.currentTime = STATE.cueTime;
-    console.log(`Deck ${assignedDeck} cue recalled`, STATE.cueTime);
+    debugLog(`Deck ${assignedDeck} cue recalled`, STATE.cueTime);
     return;
   }
 
   STATE.cueTime = video.currentTime;
-  console.log(`Deck ${assignedDeck} cue saved`, STATE.cueTime);
+  debugLog(`Deck ${assignedDeck} cue saved`, STATE.cueTime);
 }
 
 function clearHotcueLights() {
@@ -223,7 +231,7 @@ function setHotcue(index) {
 
   if (STATE.hotcues[index] == null) {
     STATE.hotcues[index] = video.currentTime;
-    console.log(`Deck ${assignedDeck} hotcue ${index} saved`, STATE.hotcues[index]);
+    debugLog(`Deck ${assignedDeck} hotcue ${index} saved`, STATE.hotcues[index]);
 
     const target = getResolvedHotcue(index);
     if (midiOut && target) {
@@ -233,7 +241,7 @@ function setHotcue(index) {
   }
 
   video.currentTime = STATE.hotcues[index];
-  console.log(`Deck ${assignedDeck} hotcue ${index} recalled`, STATE.hotcues[index]);
+  debugLog(`Deck ${assignedDeck} hotcue ${index} recalled`, STATE.hotcues[index]);
 }
 
 function setTempo(rate) {
@@ -256,7 +264,7 @@ function resetPlaybackState(reason = "manual") {
   applyPlaybackRate();
   clearHotcueLights();
   syncHotcueLights();
-  console.log(`Deck ${assignedDeck ?? "-"} state reset`, reason);
+  debugLog(`Deck ${assignedDeck ?? "-"} state reset`, reason);
 }
 
 function decodeRelativeValue(raw, format = "binaryOffset") {
@@ -320,7 +328,7 @@ function seekByJog(delta) {
   STATE.jogOffset = 0;
   applyPlaybackRate();
   video.currentTime = nextTime;
-  console.log(`Deck ${assignedDeck} scratch seek`, { delta, nextTime });
+  debugLog(`Deck ${assignedDeck} scratch seek`, { delta, nextTime });
 }
 
 function midiMatch(event, target) {
@@ -422,7 +430,7 @@ function handleMidiEvent(event) {
     const direction = mapping.jog.invert ? -1 : 1;
     const effectiveDelta = (scratchCcs.includes(cc) ? delta * 0.5 : delta) * direction;
 
-    console.log(`Deck ${assignedDeck} jog`, { cc, raw, delta, effectiveDelta, relativeFormat });
+    debugLog(`Deck ${assignedDeck} jog`, { cc, raw, delta, effectiveDelta, relativeFormat });
 
     if (effectiveDelta !== 0) {
       if (scratchCcs.includes(cc)) {
@@ -463,7 +471,7 @@ async function setupMidi() {
 
     midiInitialized = true;
     syncHotcueLights();
-    console.log(`Deck ${assignedDeck} MIDI initialized`, Array.from(midiAccess.inputs.values()).map((port) => port.name));
+    debugLog(`Deck ${assignedDeck} MIDI initialized`, Array.from(midiAccess.inputs.values()).map((port) => port.name));
   } catch (error) {
     console.error("MIDI access error", error);
   }
@@ -482,7 +490,7 @@ function updateDeckAssignment(nextDeck) {
 
   clearHotcueLights();
   assignedDeck = nextDeck;
-  console.log("Assigned deck changed", assignedDeck);
+  debugLog("Assigned deck changed", assignedDeck);
   updateDeckBadge();
   resetPlaybackState("deck-assignment");
 

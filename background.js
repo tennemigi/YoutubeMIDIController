@@ -1,7 +1,14 @@
 const YOUTUBE_URL_PATTERN = "https://www.youtube.com/*";
+const DEBUG = false;
 
 let recomputeTimer = null;
 let lastDeckAssignments = new Map();
+
+function debugLog(...args) {
+  if (DEBUG) {
+    console.log(...args);
+  }
+}
 
 function sendMessageToTab(tabId, message) {
   if (!tabId) return;
@@ -36,6 +43,7 @@ async function recomputeDeckAssignments() {
   const tabs = await getYoutubeTabs();
   const deckTabs = pickDeckTabs(tabs);
   const nextAssignments = new Map(deckTabs.map((tab, index) => [tab.id, index + 1]));
+  debugLog("Deck assignments recomputed", [...nextAssignments.entries()]);
 
   for (const tab of tabs) {
     const nextDeck = nextAssignments.get(tab.id) ?? null;
