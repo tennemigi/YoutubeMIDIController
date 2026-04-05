@@ -41,6 +41,8 @@ let assignedDeck = null;
 let midiAccess = null;
 let midiOut = null;
 let midiInitialized = false;
+let currentPageKey = getPageKey();
+let deckBadgeElement = null;
 
 function normalizeMapping(raw) {
   if (!raw || typeof raw !== "object") return DEFAULT_MAP;
@@ -78,6 +80,15 @@ function getVideo() {
   return document.querySelector("video");
 }
 
+function getPageKey() {
+  const url = new URL(window.location.href);
+  return [
+    url.pathname,
+    url.searchParams.get("v") || "",
+    url.searchParams.get("list") || ""
+  ].join("|");
+}
+
 function getDeckChannel(baseChannel, targetKind = "main") {
   if (baseChannel == null || assignedDeck == null) return baseChannel;
   if (assignedDeck === 1) return baseChannel;
@@ -108,6 +119,48 @@ function applyPlaybackRate() {
   video.playbackRate = rate;
 
   console.log(`Deck ${assignedDeck ?? "-"} Final Rate:`, rate);
+}
+
+function ensureDeckBadge() {
+  if (deckBadgeElement?.isConnected) return deckBadgeElement;
+
+  deckBadgeElement = document.createElement("div");
+  deckBadgeElement.id = "yt-midi-deck-badge";
+  deckBadgeElement.style.position = "fixed";
+  deckBadgeElement.style.top = "15px";
+  deckBadgeElement.style.left = "185px";
+  deckBadgeElement.style.zIndex = "999999";
+  deckBadgeElement.style.padding = "8px 12px";
+  deckBadgeElement.style.borderRadius = "999px";
+  deckBadgeElement.style.fontFamily = "\"Segoe UI\", sans-serif";
+  deckBadgeElement.style.fontSize = "12px";
+  deckBadgeElement.style.fontWeight = "700";
+  deckBadgeElement.style.letterSpacing = "0.08em";
+  deckBadgeElement.style.textTransform = "uppercase";
+  deckBadgeElement.style.pointerEvents = "none";
+  deckBadgeElement.style.boxShadow = "0 10px 30px rgba(0, 0, 0, 0.25)";
+  deckBadgeElement.style.backdropFilter = "blur(10px)";
+  document.documentElement.appendChild(deckBadgeElement);
+
+  return deckBadgeElement;
+}
+
+function updateDeckBadge() {
+  const badge = ensureDeckBadge();
+
+  if (assignedDeck === 1) {
+    badge.textContent = "Deck 1";
+    badge.style.color = "#f7f7f7";
+    badge.style.background = "rgba(16, 97, 255, 0.82)";
+  } else if (assignedDeck === 2) {
+    badge.textContent = "Deck 2";
+    badge.style.color = "#f7f7f7";
+    badge.style.background = "rgba(230, 70, 70, 0.82)";
+  } else {
+    badge.textContent = "Unassigned";
+    badge.style.color = "#111";
+    badge.style.background = "rgba(255, 255, 255, 0.82)";
+  }
 }
 
 function setPlayPause() {
@@ -185,6 +238,24 @@ function setHotcue(index) {
 function setTempo(rate) {
   STATE.tempoRate = rate;
   applyPlaybackRate();
+}
+
+function resetPlaybackState(reason = "manual") {
+  STATE.cueTime = null;
+  STATE.hotcues = Array(8).fill(null);
+  STATE.tempoValue = 8192;
+  STATE.tempoRate = 1.0;
+  STATE.jogOffset = 0;
+
+  if (STATE.jogResetTimer) {
+    clearTimeout(STATE.jogResetTimer);
+    STATE.jogResetTimer = null;
+  }
+
+  applyPlaybackRate();
+  clearHotcueLights();
+  syncHotcueLights();
+  console.log(`Deck ${assignedDeck ?? "-"} state reset`, reason);
 }
 
 function decodeRelativeValue(raw, format = "binaryOffset") {
@@ -376,6 +447,7 @@ async function setupMidi() {
 function loadMapping() {
   chrome.storage.sync.get(["midiMapping"], (data) => {
     mapping = normalizeMapping(data.midiMapping);
+    updateDeckBadge();
     syncHotcueLights();
   });
 }
@@ -386,6 +458,8 @@ function updateDeckAssignment(nextDeck) {
   clearHotcueLights();
   assignedDeck = nextDeck;
   console.log("Assigned deck changed", assignedDeck);
+  updateDeckBadge();
+  resetPlaybackState("deck-assignment");
 
   if (assignedDeck != null) {
     setupMidi();
@@ -406,6 +480,7 @@ function registerYoutubeWindow() {
 
 loadMapping();
 registerYoutubeWindow();
+updateDeckBadge();
 
 window.addEventListener("beforeunload", () => {
   clearHotcueLights();
@@ -415,8 +490,30 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
     clearHotcueLights();
   } else {
+    updateDeckBadge();
     registerYoutubeWindow();
   }
+});
+
+function handlePotentialNavigation(reason) {
+  const nextPageKey = getPageKey();
+  if (nextPageKey === currentPageKey) return;
+
+  currentPageKey = nextPageKey;
+  resetPlaybackState(reason);
+  updateDeckBadge();
+}
+
+window.addEventListener("yt-navigate-finish", () => {
+  handlePotentialNavigation("yt-navigate-finish");
+});
+
+window.addEventListener("popstate", () => {
+  setTimeout(() => handlePotentialNavigation("popstate"), 0);
+});
+
+window.addEventListener("hashchange", () => {
+  setTimeout(() => handlePotentialNavigation("hashchange"), 0);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
