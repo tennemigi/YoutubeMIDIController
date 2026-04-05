@@ -11,6 +11,7 @@ const DEFAULT_MAP = {
     relativeFormat: "binaryOffset",
     invert: false,
     sensitivity: 0.10,
+    scratchSeekSeconds: 0.03,
     negativeSensitivityMultiplier: 1.0,
     maxOffset: 1.5,
     resetDelayMs: 160
@@ -302,6 +303,26 @@ function jog(delta) {
   }, resetDelayMs);
 }
 
+function seekByJog(delta) {
+  const video = getVideo();
+  if (!video) return;
+
+  const scratchSeekSeconds = mapping.jog.scratchSeekSeconds ?? 1.5;
+  const duration = Number.isFinite(video.duration) ? video.duration : null;
+  const maxTime = duration != null ? duration : Number.MAX_SAFE_INTEGER;
+  const nextTime = Math.max(0, Math.min(maxTime, video.currentTime + delta * scratchSeekSeconds));
+
+  if (STATE.jogResetTimer) {
+    clearTimeout(STATE.jogResetTimer);
+    STATE.jogResetTimer = null;
+  }
+
+  STATE.jogOffset = 0;
+  applyPlaybackRate();
+  video.currentTime = nextTime;
+  console.log(`Deck ${assignedDeck} scratch seek`, { delta, nextTime });
+}
+
 function midiMatch(event, target) {
   if (!target || !event || assignedDeck == null) return false;
 
@@ -404,7 +425,11 @@ function handleMidiEvent(event) {
     console.log(`Deck ${assignedDeck} jog`, { cc, raw, delta, effectiveDelta, relativeFormat });
 
     if (effectiveDelta !== 0) {
-      jog(effectiveDelta);
+      if (scratchCcs.includes(cc)) {
+        seekByJog(effectiveDelta);
+      } else {
+        jog(effectiveDelta);
+      }
     }
   }
 }
