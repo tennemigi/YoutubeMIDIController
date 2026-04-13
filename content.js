@@ -51,12 +51,17 @@ const STATE = {
 
 let mapping = DEFAULT_MAP;
 let assignedDeck = null;
+let extensionEnabled = true;
+let deckOverrideMode = "auto";
 let midiAccess = null;
 let midiOut = null;
 let midiInitialized = false;
 let currentPageKey = getPageKey();
 let deckBadgeElement = null;
+let deckPanelElement = null;
 let currentVideoElement = null;
+let playBlinkTimer = null;
+let playBlinkOn = false;
 
 function debugLog(...args) {
   if (DEBUG) {
@@ -146,6 +151,16 @@ function getResolvedChCueTarget() {
   return resolveDeckTarget(mapping.chCue);
 }
 
+function getResolvedPlayTarget() {
+  if (!mapping.playPause) return null;
+  return resolveDeckTarget(mapping.playPause);
+}
+
+function getResolvedCueTarget() {
+  if (!mapping.cue) return null;
+  return resolveDeckTarget(mapping.cue);
+}
+
 function applyPlaybackRate() {
   const video = getVideo();
   if (!video) return;
@@ -175,18 +190,38 @@ function ensureDeckBadge() {
   deckBadgeElement.style.fontWeight = "700";
   deckBadgeElement.style.letterSpacing = "0.08em";
   deckBadgeElement.style.textTransform = "uppercase";
-  deckBadgeElement.style.pointerEvents = "none";
+  deckBadgeElement.style.cursor = "pointer";
   deckBadgeElement.style.boxShadow = "0 10px 30px rgba(0, 0, 0, 0.25)";
   deckBadgeElement.style.backdropFilter = "blur(10px)";
+  deckBadgeElement.style.pointerEvents = "auto";
+  deckBadgeElement.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleDeckPanel();
+  });
   document.documentElement.appendChild(deckBadgeElement);
 
   return deckBadgeElement;
 }
 
+function isFullscreenActive() {
+  return Boolean(document.fullscreenElement);
+}
+
 function updateDeckBadge() {
   const badge = ensureDeckBadge();
+  const fullscreen = isFullscreenActive();
 
-  if (assignedDeck === 1) {
+  badge.style.display = fullscreen ? "none" : "block";
+  if (fullscreen) {
+    hideDeckPanel();
+    return;
+  }
+
+  if (!extensionEnabled) {
+    badge.textContent = "Disabled";
+    badge.style.color = "#f7f7f7";
+    badge.style.background = "rgba(90, 90, 90, 0.82)";
+  } else if (assignedDeck === 1) {
     badge.textContent = "Deck 1";
     badge.style.color = "#f7f7f7";
     badge.style.background = "rgba(16, 97, 255, 0.82)";
@@ -199,6 +234,84 @@ function updateDeckBadge() {
     badge.style.color = "#111";
     badge.style.background = "rgba(255, 255, 255, 0.82)";
   }
+
+  updateDeckPanel();
+}
+
+function ensureDeckPanel() {
+  if (deckPanelElement?.isConnected) return deckPanelElement;
+
+  deckPanelElement = document.createElement("div");
+  deckPanelElement.id = "yt-midi-deck-panel";
+  deckPanelElement.style.position = "fixed";
+  deckPanelElement.style.top = "54px";
+  deckPanelElement.style.left = "185px";
+  deckPanelElement.style.zIndex = "999999";
+  deckPanelElement.style.width = "220px";
+  deckPanelElement.style.padding = "12px";
+  deckPanelElement.style.borderRadius = "16px";
+  deckPanelElement.style.background = "rgba(20, 20, 20, 0.92)";
+  deckPanelElement.style.color = "#f7f7f7";
+  deckPanelElement.style.fontFamily = "\"Segoe UI\", sans-serif";
+  deckPanelElement.style.fontSize = "13px";
+  deckPanelElement.style.boxShadow = "0 16px 40px rgba(0, 0, 0, 0.35)";
+  deckPanelElement.style.backdropFilter = "blur(10px)";
+  deckPanelElement.style.display = "none";
+  deckPanelElement.innerHTML = `
+    <div style="font-weight:700; margin-bottom:10px;">Controller</div>
+    <label style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+      <input id="yt-midi-enabled-toggle" type="checkbox" />
+      <span>Extension Enabled</span>
+    </label>
+    <label style="display:block; margin-bottom:6px;">Deck Selection</label>
+    <select id="yt-midi-deck-select" style="width:100%; padding:6px 8px; border-radius:10px; border:1px solid rgba(255,255,255,0.15); background:#111; color:#f7f7f7;">
+      <option value="auto">Auto</option>
+      <option value="1">Deck 1</option>
+      <option value="2">Deck 2</option>
+    </select>
+  `;
+  deckPanelElement.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+  document.documentElement.appendChild(deckPanelElement);
+
+  const enabledToggle = deckPanelElement.querySelector("#yt-midi-enabled-toggle");
+  const deckSelect = deckPanelElement.querySelector("#yt-midi-deck-select");
+
+  enabledToggle.addEventListener("change", () => {
+    updateControllerState({ enabled: enabledToggle.checked });
+  });
+  deckSelect.addEventListener("change", () => {
+    updateControllerState({ override: deckSelect.value });
+  });
+
+  document.addEventListener("click", () => {
+    hideDeckPanel();
+  });
+
+  return deckPanelElement;
+}
+
+function updateDeckPanel() {
+  const panel = ensureDeckPanel();
+  const enabledToggle = panel.querySelector("#yt-midi-enabled-toggle");
+  const deckSelect = panel.querySelector("#yt-midi-deck-select");
+  enabledToggle.checked = extensionEnabled;
+  deckSelect.value = deckOverrideMode;
+  deckSelect.disabled = !extensionEnabled;
+}
+
+function toggleDeckPanel() {
+  if (isFullscreenActive()) return;
+
+  const panel = ensureDeckPanel();
+  updateDeckPanel();
+  panel.style.display = panel.style.display === "none" ? "block" : "none";
+}
+
+function hideDeckPanel() {
+  if (!deckPanelElement) return;
+  deckPanelElement.style.display = "none";
 }
 
 function setPlayPause() {
@@ -218,11 +331,13 @@ function setCue() {
   if (!video.paused && STATE.cueTime !== null) {
     video.currentTime = STATE.cueTime;
     debugLog(`Deck ${assignedDeck} cue recalled`, STATE.cueTime);
+    updateTransportLights();
     return;
   }
 
   STATE.cueTime = video.currentTime;
   debugLog(`Deck ${assignedDeck} cue saved`, STATE.cueTime);
+  updateTransportLights();
 }
 
 function clearHotcueLights() {
@@ -272,6 +387,52 @@ function updateChCueLight() {
   midiOut.send([0x90 | target.channel, target.note, video.muted ? 0 : 127]);
 }
 
+function stopPlayBlink() {
+  if (!playBlinkTimer) return;
+  clearInterval(playBlinkTimer);
+  playBlinkTimer = null;
+}
+
+function updateTransportLights() {
+  if (!midiOut || assignedDeck == null) return;
+
+  const video = getVideo();
+  const playTarget = getResolvedPlayTarget();
+  const cueTarget = getResolvedCueTarget();
+
+  if (cueTarget) {
+    midiOut.send([0x90 | cueTarget.channel, cueTarget.note, STATE.cueTime != null ? 127 : 0]);
+  }
+
+  if (!playTarget || !video) {
+    stopPlayBlink();
+    return;
+  }
+
+  if (!video.paused && !video.ended) {
+    stopPlayBlink();
+    midiOut.send([0x90 | playTarget.channel, playTarget.note, 127]);
+    return;
+  }
+
+  playBlinkOn = true;
+  midiOut.send([0x90 | playTarget.channel, playTarget.note, 127]);
+
+  if (playBlinkTimer) return;
+
+  playBlinkTimer = setInterval(() => {
+    const currentVideo = getVideo();
+    if (!currentVideo || (!currentVideo.paused && !currentVideo.ended)) {
+      stopPlayBlink();
+      updateTransportLights();
+      return;
+    }
+
+    playBlinkOn = !playBlinkOn;
+    midiOut.send([0x90 | playTarget.channel, playTarget.note, playBlinkOn ? 127 : 0]);
+  }, 450);
+}
+
 function syncHotcueLights() {
   if (!midiOut || assignedDeck == null) return;
 
@@ -283,6 +444,7 @@ function syncHotcueLights() {
 
   updateLoopLights();
   updateChCueLight();
+  updateTransportLights();
 }
 
 function setHotcue(index) {
@@ -311,7 +473,7 @@ function setTempo(rate) {
 
 function toggleMute() {
   const video = getVideo();
-  if (!video) return;
+  if (!video || !extensionEnabled) return;
 
   video.muted = !video.muted;
   updateChCueLight();
@@ -347,21 +509,32 @@ function handleVideoVolumeChange() {
   updateChCueLight();
 }
 
+function handleVideoPlaybackStateChange() {
+  updateTransportLights();
+}
+
 function bindVideoEvents() {
   const video = getVideo();
   if (video === currentVideoElement) return;
 
   if (currentVideoElement) {
     currentVideoElement.removeEventListener("volumechange", handleVideoVolumeChange);
+    currentVideoElement.removeEventListener("play", handleVideoPlaybackStateChange);
+    currentVideoElement.removeEventListener("pause", handleVideoPlaybackStateChange);
+    currentVideoElement.removeEventListener("ended", handleVideoPlaybackStateChange);
   }
 
   currentVideoElement = video;
 
   if (currentVideoElement) {
     currentVideoElement.addEventListener("volumechange", handleVideoVolumeChange);
+    currentVideoElement.addEventListener("play", handleVideoPlaybackStateChange);
+    currentVideoElement.addEventListener("pause", handleVideoPlaybackStateChange);
+    currentVideoElement.addEventListener("ended", handleVideoPlaybackStateChange);
   }
 
   updateChCueLight();
+  updateTransportLights();
 }
 
 function setLoopIn() {
@@ -499,7 +672,7 @@ function midiMatch(event, target) {
 }
 
 function handleMidiEvent(event) {
-  if (assignedDeck == null) return;
+  if (!extensionEnabled || assignedDeck == null) return;
 
   const playPauseTarget = resolveDeckTarget(mapping.playPause);
   if (playPauseTarget && midiMatch(event, playPauseTarget)) {
@@ -654,7 +827,10 @@ function loadMapping() {
 }
 
 function updateDeckAssignment(nextDeck) {
-  if (assignedDeck === nextDeck) return;
+  if (assignedDeck === nextDeck) {
+    updateDeckBadge();
+    return;
+  }
 
   clearHotcueLights();
   assignedDeck = nextDeck;
@@ -666,7 +842,28 @@ function updateDeckAssignment(nextDeck) {
     setupMidi();
     bindVideoEvents();
     syncHotcueLights();
+  } else {
+    stopPlayBlink();
   }
+}
+
+function applyControllerState(response) {
+  if (!response) return;
+  extensionEnabled = response.enabled ?? extensionEnabled;
+  deckOverrideMode = response.override ?? deckOverrideMode;
+
+  if (!extensionEnabled) {
+    clearHotcueLights();
+  }
+
+  updateDeckAssignment(response.deck ?? null);
+
+  if (extensionEnabled && assignedDeck != null) {
+    bindVideoEvents();
+    syncHotcueLights();
+  }
+
+  updateDeckBadge();
 }
 
 function registerYoutubeWindow() {
@@ -676,7 +873,18 @@ function registerYoutubeWindow() {
       return;
     }
 
-    updateDeckAssignment(response?.deck ?? null);
+    applyControllerState(response);
+  });
+}
+
+function updateControllerState(nextState) {
+  chrome.runtime.sendMessage({ cmd: "updateControllerState", ...nextState }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.warn("Failed to update controller state", chrome.runtime.lastError.message);
+      return;
+    }
+
+    applyControllerState(response);
   });
 }
 
@@ -721,6 +929,10 @@ window.addEventListener("hashchange", () => {
   setTimeout(() => handlePotentialNavigation("hashchange"), 0);
 });
 
+document.addEventListener("fullscreenchange", () => {
+  updateDeckBadge();
+});
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.midiMapping) {
     mapping = normalizeMapping(changes.midiMapping.newValue);
@@ -733,7 +945,7 @@ chrome.runtime.onMessage.addListener((message) => {
   if (!message || !message.cmd) return;
 
   if (message.cmd === "assignDeck") {
-    updateDeckAssignment(message.deck ?? null);
+    applyControllerState(message);
     return;
   }
 

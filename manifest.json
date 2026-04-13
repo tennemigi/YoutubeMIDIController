@@ -3,7 +3,7 @@
   "name": "YouTube MIDI Controller",
   "short_name": "YT MIDI",
   "description": "Unofficial Chrome extension for controlling YouTube with a DDJ-FLX4 via MIDI.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "permissions": ["storage", "activeTab", "scripting", "midi", "tabs"],
   "host_permissions": ["https://www.youtube.com/*"],
   "background": {
